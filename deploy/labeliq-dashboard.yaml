@@ -79,3 +79,91 @@ spec:
   egress:
     - to: [{ipBlock: {cidr: 172.20.50.61/32}}]
       ports: [{port: 443, protocol: TCP}]
+---
+# Daily WhatsApp report (report.py): per unit, tablets used out of allocated, scans per tablet, total scans, scans per
+# hour per tablet. SUSPENDED until the recipients are known; nothing runs while suspend is true. What it does is set
+# by the Secret `labeliq-report` (report.json: mode off/demo/live, people, allocated tablets per unit) which the
+# admin creates by hand; without that Secret the job does nothing. Set the real time here (the schedule is IST).
+# One test run at any time:  kubectl -n labeliq create job report-test --from=cronjob/labeliq-report
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: labeliq-report
+  namespace: labeliq
+  labels: {app.kubernetes.io/name: labeliq-report}
+spec:
+  schedule: "30 18 * * *"
+  timeZone: "Asia/Kolkata"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: labeliq-report}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          hostAliases:
+            - ip: "172.20.50.61"
+              hostnames: ["labeliq.shahi.co.in"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: report
+              image: localhost/labeliq-dashboard:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "report.py"]
+              env:
+                - {name: TZ, value: "Asia/Kolkata"}
+                - {name: LABELIQ_UPSTREAM_HOST, value: "labeliq.shahi.co.in"}
+                - {name: LABELIQ_CA_FILE, value: "/srv/certs/geotrust-tls-rsa-ca-g1.pem"}
+                - {name: LABELIQ_REPORT_FILE, value: "/etc/labeliq-report/report.json"}
+                - {name: WHATSAPP_URL, value: "http://wa-gateway.order-desk.svc.cluster.local:2785/api"}
+                - {name: WHATSAPP_SESSION, value: "default"}
+                - name: LABELIQ_MASTER_TOKEN
+                  valueFrom: {secretKeyRef: {name: labeliq, key: LABELIQ_MASTER_TOKEN}}
+                - name: WHATSAPP_API_KEY
+                  valueFrom: {secretKeyRef: {name: labeliq-report, key: WHATSAPP_API_KEY, optional: true}}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              resources:
+                requests: {cpu: 20m, memory: 48Mi}
+                limits: {cpu: 300m, memory: 128Mi}
+              volumeMounts:
+                - {name: report-config, mountPath: /etc/labeliq-report, readOnly: true}
+          volumes:
+            - name: report-config
+              secret: {secretName: labeliq-report, optional: true}
+---
+# The report job may call the Label IQ server, the WhatsApp gateway and cluster DNS (to find the gateway). Nothing else.
+# (The web proxy keeps its own, tighter fence above: policies add up per pod.) The gateway side needs a matching
+# rule in the Order Desk repo (wa-gateway-in) before the first send.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: labeliq-report-egress, namespace: labeliq}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: labeliq-report}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 172.20.50.61/32}}]
+      ports: [{port: 443, protocol: TCP}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: order-desk}}
+          podSelector: {matchLabels: {app: wa-gateway}}
+      ports: [{port: 2785, protocol: TCP}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]

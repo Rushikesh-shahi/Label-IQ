@@ -115,3 +115,9 @@ Files received on 13 Nov 2026 (`LabelIQ_Server_IT_Deployment.zip`, `telemetry_se
 | 502 "did not accept shahi-server's master token" | token rotated or revoked | section Secret |
 | Page reloads to the Shahi sign-in | SSO session ended | sign in again |
 | 503 "busy" | many calls at once | wait; raise `LABELIQ_MAX_PARALLEL` only with IT's OK |
+
+## Daily WhatsApp report
+
+Per unit: tablets used out of allocated, scans per tablet, total scans, scans per hour per tablet, sent through the same
+WhatsApp gateway as the tracker alerts. Suspended until the recipients are known. Full description, settings and the
+switch-on steps: [docs/DAILY-REPORT.md](docs/DAILY-REPORT.md).

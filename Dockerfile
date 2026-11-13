@@ -4,7 +4,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 WORKDIR /srv
-COPY proxy.py ./
+COPY proxy.py upstream.py report.py ./
 COPY static ./static
 COPY certs ./certs
 USER 10001
