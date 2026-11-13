@@ -10,28 +10,23 @@ A scheduled job (Kubernetes CronJob `labeliq-report`, **suspended until activate
 It reads the official server read-only (same master token, same certificate rules as the proxy) and sends through the
 **same WhatsApp gateway and number** as the Garment Tracker alerts (`wa-gateway.order-desk`, send-text call).
 
-Sample (shape of the real message, tablet names shortened):
+Sample (Unit 21, real data of 13 Nov 2026 up to 16:10; the tablet name and "of 1" come from the system, a friendly name
+and the allocated number can be set in the settings):
 
 ```
 *Label IQ · Daily report*
-Fri 13 Nov 2026 · till 18:30
+Fri 13 Nov 2026 · till 16:10
 
-*Unit 44*
-Tablets used: *2 of 3*
-Total scans today: *480*
-✔ Match 444 · ✖ Mismatch 2 · ◌ Incomplete 34
+*Unit 21*
+Tablets used: *1 of 1*
+Total scans today: *551*
 
-*1. Tab 1* · 454 scans
-09–10: 92 · 10–11: 106 · 11–12: 66 · 12–13: 92 · 13–14: 35 · 14–15: 63
-
-*2. Tab 2* · 26 scans
-10–11: 8 · 11–12: 11 · 12–13: 0 · 13–14: 7
-
-Not used today (1): Tab 3
+*1. U21-b91f55e9* · 551 scans
+10–11: 52 · 11–12: 118 · 12–13: 147 · 13–14: 63 · 14–15: 65 · 15–16: 106
 ```
 
 A person with several units gets **one** message with an "All units" summary line and every unit below it. The match /
-mismatch / incomplete line can be switched off (`LABELIQ_REPORT_QUALITY=off`).
+mismatch / incomplete line is **off** by default (`LABELIQ_REPORT_QUALITY=on` adds it).
 
 ## How the numbers are counted
 
@@ -40,7 +35,7 @@ mismatch / incomplete line can be switched off (`LABELIQ_REPORT_QUALITY=off`).
   tablet. Its name is the label of its newest install (e.g. `U44-603ec46d`) unless a friendly name is set (`names`).
 - **Used** = at least one scan today. **Allocated** = the number set for the unit in `allocated`; if none is set, the
   tablets of that unit that reported in the last 7 days (the message then says so). "Used" is never shown above "allocated".
-- "Scans" counts every scan event, as the dashboard does (match + mismatch + incomplete).
+- **Scans = MATCH scans only** (the valid ones, as the tablets count POs): per tablet, per hour and in the total, so the tablets add up to the total. `LABELIQ_REPORT_COUNT=all` counts every scan event instead. A tablet that scanned only mismatches still counts as used.
 - Left out: demo builds (variant contains "Demo") and installs whose label starts with `PC-` (test PCs).
 
 ## Settings: Secret `labeliq-report` (never in git)

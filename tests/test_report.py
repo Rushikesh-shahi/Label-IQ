@@ -142,12 +142,27 @@ class CountingTests(Base):
         u44 = u["u44"]
         self.assertEqual([t["label"] for t in u44["used"]], ["U44-aaa", "U44-bbb"])   # newest label, most scans first
         self.assertEqual((u44["scans"], u44["match"], u44["mismatch"], u44["incomplete"]), (4, 2, 1, 1))
+        self.assertEqual(u44["counted"], 2)                         # only MATCH scans are shown
         self.assertEqual(len(u44["used"]), 2)
         self.assertEqual(u44["allocated"], 3)                       # A, B, C recently seen; D is stale
         self.assertEqual([t["label"] for t in u44["unused"]], ["U44-ccc"])
         a = u44["used"][0]
+        self.assertEqual(dict(a["hours"]), {9: 1})                  # hours count MATCH scans only
+        self.assertEqual(a["counted"], 1)
+        self.assertEqual(report.hours_line(a), "09–10: 1")
+
+    def test_count_all_counts_every_scan_event_and_shows_idle_hours_as_zero(self):
+        u = report.build_units(FLEET, SCANS, NOW_MS, 7, ("PC-",), None, None, "all")
+        a = u["u44"]["used"][0]
+        self.assertEqual((u["u44"]["counted"], a["counted"]), (4, 3))
         self.assertEqual(dict(a["hours"]), {9: 2, 11: 1})
         self.assertEqual(report.hours_line(a), "09–10: 2 · 10–11: 0 · 11–12: 1")   # idle hour in between shows as 0
+
+    def test_a_tablet_with_only_mismatches_is_used_but_shows_zero(self):
+        s = [scan("u10", "U10-xxx", "X", 10, "MISMATCH")]
+        u = self.units(scans=s)["u10"]
+        self.assertEqual((len(u["used"]), u["counted"]), (1, 0))
+        self.assertIn("*1. U10-xxx* · 0 scans", report.unit_text(u))
 
     def test_demo_builds_and_pc_installs_are_left_out(self):
         u35 = self.units()["u35"]
@@ -167,7 +182,7 @@ class CountingTests(Base):
     def test_friendly_names_replace_labels(self):
         u = report.build_units(FLEET, SCANS, NOW_MS, 7, ("PC-",), None, {"U44-aaa": "Tab 1", "B": "Tab 2", "x": ""})
         self.assertEqual([t["label"] for t in u["u44"]["used"]], ["Tab 1", "Tab 2"])   # by label, or by tablet key
-        self.assertIn("*1. Tab 1* · 3 scans", report.unit_text(u["u44"]))
+        self.assertIn("*1. Tab 1* · 1 scan", report.unit_text(u["u44"]))
 
     def test_names_come_from_the_settings_file(self):
         f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
@@ -181,12 +196,18 @@ class CountingTests(Base):
 
 
 class TextTests(Base):
-    def test_unit_text(self):
+    def test_unit_text_shows_match_scans_only_and_no_quality_line(self):
         t = report.unit_text(self.units()["u44"])
-        for part in ("*Unit 44*", "Tablets used: *2 of 3*", "Total scans today: *4*", "✔ Match 2 · ✖ Mismatch 1 · ◌ Incomplete 1",
-                     "*1. U44-aaa* · 3 scans", "09–10: 2 · 10–11: 0 · 11–12: 1", "*2. U44-bbb* · 1 scans",
-                     "15–16: 1", "Not used today (1): U44-ccc", "_Allocated = tablets that reported in the last 7 days._"):
+        for part in ("*Unit 44*", "Tablets used: *2 of 3*", "Total scans today: *2*",
+                     "*1. U44-aaa* · 1 scan\n09–10: 1", "*2. U44-bbb* · 1 scan\n15–16: 1",
+                     "Not used today (1): U44-ccc", "_Allocated = tablets that reported in the last 7 days._"):
             self.assertIn(part, t)
+        for gone in ("Mismatch", "Incomplete", "Match "):
+            self.assertNotIn(gone, t)
+
+    def test_quality_line_can_be_switched_on(self):
+        t = report.unit_text(self.units()["u44"], show_quality=True)
+        self.assertIn("✔ Match 2 · ✖ Mismatch 1 · ◌ Incomplete 1", t)
 
     def test_no_note_when_allocation_is_configured_and_quality_line_can_be_off(self):
         t = report.unit_text(self.units({"u44": 3})["u44"], show_quality=False)
@@ -202,7 +223,7 @@ class TextTests(Base):
         u = self.units({"u44": 3, "u10": 2, "u35": 1})
         m = report.message_for([u["u10"], u["u44"]], DAY, "18:30")
         self.assertIn("Fri 13 Nov 2026 · till 18:30", m)
-        self.assertIn("All units: tablets used *3 of 5* · total scans *6*", m)
+        self.assertIn("All units: tablets used *3 of 5* · total scans *4*", m)
         self.assertLess(m.index("*Unit 10*"), m.index("*Unit 44*"))
         self.assertEqual(m.count("Allocated ="), 0)
 

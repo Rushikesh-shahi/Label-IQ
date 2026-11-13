@@ -84,8 +84,10 @@ def keep(variant: Any, label: Any, exclude_prefixes: tuple[str, ...]) -> bool:
 
 def build_units(fleet: dict, scans: list[dict], now_ms: int, active_days: int = 7,
                 exclude_prefixes: tuple[str, ...] = ("PC-",), allocated: Optional[dict] = None,
-                names: Optional[dict] = None) -> dict[str, dict]:
-    """Per unit id: tablets (scans, results, hours), used, allocated, totals. Pure function (tested)."""
+                names: Optional[dict] = None, count: str = "match") -> dict[str, dict]:
+    """Per unit id: tablets (scans, results, hours), used, allocated, totals. Pure function (tested).
+    count="match" (default): the numbers shown (per tablet, per hour, total) are MATCH scans only, as the tablets'
+    own PO counting does. count="all": every scan event. A tablet counts as used when it scanned anything at all."""
     allocated = allocated or {}
     names = {str(k).strip(): str(v).strip() for k, v in (names or {}).items() if str(v).strip()}
     recent_ms = now_ms - active_days * 86400 * 1000
@@ -131,13 +133,15 @@ def build_units(fleet: dict, scans: list[dict], now_ms: int, active_days: int = 
         else:
             t["incomplete"] += 1
         ts = r.get("tsDevice")
-        if isinstance(ts, (int, float)):
+        if isinstance(ts, (int, float)) and (count == "all" or result == "MATCH"):
             t["hours"][datetime.datetime.fromtimestamp(ts / 1000, IST).hour] += 1
         unit(uid)["known"].add(tablet_key(dev))
 
     out: dict[str, dict] = {}
     for uid, u in units.items():
-        tabs = sorted(u["tablets"].values(), key=lambda t: (-t["scans"], t["label"] or t["key"]))
+        for t in u["tablets"].values():
+            t["counted"] = t["scans"] if count == "all" else t["match"]
+        tabs = sorted(u["tablets"].values(), key=lambda t: (-t["counted"], t["label"] or t["key"]))
         for t in tabs:
             t["label"] = names.get(t["label"]) or names.get(t["key"]) or t["label"] or "tablet"
         used = [t for t in tabs if t["scans"] > 0]
@@ -147,6 +151,7 @@ def build_units(fleet: dict, scans: list[dict], now_ms: int, active_days: int = 
             "unit": uid, "title": unit_title(uid), "tablets": tabs, "used": used,
             "unused": [t for t in tabs if t["scans"] == 0 and t["key"] in u["known"]],
             "allocated": max(n_alloc, len(used)), "allocated_configured": configured is not None,
+            "counted": sum(t["counted"] for t in tabs),
             "scans": sum(t["scans"] for t in tabs), "match": sum(t["match"] for t in tabs),
             "mismatch": sum(t["mismatch"] for t in tabs), "incomplete": sum(t["incomplete"] for t in tabs),
         }
@@ -166,13 +171,14 @@ def date_text(day: str, till: str) -> str:
     return f"{DAYS[d.weekday()]} {d.day} {MONTHS[d.month - 1]} {d.year} · till {till}"
 
 
-def unit_text(u: dict, show_quality: bool = True, with_note: bool = True) -> str:
+def unit_text(u: dict, show_quality: bool = False, with_note: bool = True) -> str:
     lines = [f"*{u['title']}*", f"Tablets used: *{len(u['used'])} of {u['allocated']}*",
-             f"Total scans today: *{u['scans']}*"]
+             f"Total scans today: *{u['counted']}*"]
     if show_quality and u["scans"]:
         lines.append(f"✔ Match {u['match']} · ✖ Mismatch {u['mismatch']} · ◌ Incomplete {u['incomplete']}")
     for i, t in enumerate(u["used"], 1):
-        lines += ["", f"*{i}. {t['label']}* · {t['scans']} scans", hours_line(t)]
+        n = t["counted"]
+        lines += ["", f"*{i}. {t['label']}* · {n} scan{'s' if n != 1 else ''}", hours_line(t)]
     if u["unused"]:
         lines += ["", f"Not used today ({len(u['unused'])}): " + ", ".join(t["label"] for t in u["unused"])]
     elif not u["used"]:
@@ -182,13 +188,13 @@ def unit_text(u: dict, show_quality: bool = True, with_note: bool = True) -> str
     return "\n".join(lines)
 
 
-def message_for(units: list[dict], day: str, till: str, show_quality: bool = True) -> str:
+def message_for(units: list[dict], day: str, till: str, show_quality: bool = False) -> str:
     head = f"*Label IQ · Daily report*\n{date_text(day, till)}"
     if len(units) == 1:
         return head + "\n\n" + unit_text(units[0], show_quality)
     used = sum(len(u["used"]) for u in units)
     alloc = sum(u["allocated"] for u in units)
-    total = sum(u["scans"] for u in units)
+    total = sum(u["counted"] for u in units)
     summary = f"All units: tablets used *{used} of {alloc}* · total scans *{total}*"
     body = ("\n\n— — —\n\n").join(unit_text(u, show_quality, with_note=(i == len(units) - 1))
                                  for i, u in enumerate(units))
@@ -227,7 +233,7 @@ def units_for(person: dict, all_units: dict[str, dict]) -> list[dict]:
         for uid in person["units"]:
             if uid not in all_units:
                 chosen.append({"unit": uid, "title": unit_title(uid), "tablets": [], "used": [], "unused": [],
-                               "allocated": 0, "allocated_configured": True, "scans": 0, "match": 0,
+                               "allocated": 0, "allocated_configured": True, "scans": 0, "counted": 0, "match": 0,
                                "mismatch": 0, "incomplete": 0})
         chosen.sort(key=lambda u: unit_sort(u["unit"]))
     return chosen
@@ -277,13 +283,13 @@ def fetch(up: Upstream) -> tuple[dict, list[dict]]:
 
 # ---- run -----------------------------------------------------------------------------------------------------------
 def run(cfg: Config, settings: dict, wa_url: str, wa_key: str, wa_session: str = "default", print_only: bool = False,
-        now: Optional[datetime.datetime] = None, show_quality: bool = True, active_days: int = 7,
-        exclude_prefixes: tuple[str, ...] = ("PC-",), out=sys.stdout) -> int:
+        now: Optional[datetime.datetime] = None, show_quality: bool = False, active_days: int = 7,
+        exclude_prefixes: tuple[str, ...] = ("PC-",), count: str = "match", out=sys.stdout) -> int:
     now = now or datetime.datetime.now(IST)
     up = Upstream(cfg)
     fleet, scans = fetch(up)
     units = build_units(fleet, scans, int(now.timestamp() * 1000), active_days, exclude_prefixes,
-                        settings.get("allocated"), settings.get("names"))
+                        settings.get("allocated"), settings.get("names"), count)
     day, till = fleet["day"], now.strftime("%H:%M")
     log.info("report for %s: %d units, %d scans", day, len(units), len(scans))
 
@@ -336,7 +342,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         settings = load_settings(env.get("LABELIQ_REPORT_FILE", "/etc/labeliq-report/report.json"))
         return run(cfg, settings, env.get("WHATSAPP_URL", ""), env.get("WHATSAPP_API_KEY", ""),
                    env.get("WHATSAPP_SESSION", "default"), print_only="--print" in args,
-                   show_quality=env.get("LABELIQ_REPORT_QUALITY", "on") != "off",
+                   show_quality=env.get("LABELIQ_REPORT_QUALITY", "off") == "on",
+                   count=("all" if env.get("LABELIQ_REPORT_COUNT", "match") == "all" else "match"),
                    active_days=int(env.get("LABELIQ_ACTIVE_DAYS", "7")),
                    exclude_prefixes=tuple(x for x in env.get("LABELIQ_EXCLUDE_LABELS", "PC-").split(",") if x))
     except UpstreamError as e:
