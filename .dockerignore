@@ -1,0 +1,6 @@
+tests
+deploy
+README.md
+.dockerignore
+Dockerfile
+__pycache__

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Label IQ Master Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%233452D9'/%3E%3Cpath d='M10.6 5.2c-.5-.6-1.4-1-2.5-1-1.5 0-2.5.8-2.5 1.9 0 2.4 5 1.4 5 3.9 0 1.2-1.1 2-2.6 2-1.2 0-2.2-.4-2.8-1.2' fill='none' stroke='%23fff' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script src="sso-login.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<aside id="sidebar" class="sidebar" aria-label="Main navigation">
+  <a class="brand" href="#/overview">
+    <span class="mark" aria-hidden="true">S</span>
+    <span class="brand-text">
+      <span class="brand-name">SHAHI</span>
+      <span class="brand-sub">Label IQ · Master Dashboard</span>
+    </span>
+  </a>
+  <nav id="nav" class="nav" hidden>
+    <div class="nav-label">Workspace</div>
+    <a class="nav-item" href="#/overview" data-view="overview"><i data-icon="layout-dashboard"></i><span>Overview</span></a>
+    <a class="nav-item" href="#/devices" data-view="devices"><i data-icon="tablet"></i><span>Devices</span></a>
+    <a class="nav-item" href="#/pos" data-view="pos"><i data-icon="clipboard-list"></i><span>POs</span></a>
+    <a class="nav-item" href="#/scans" data-view="scans"><i data-icon="scan-line"></i><span>Scans</span></a>
+    <a class="nav-item" href="#/reports" data-view="reports"><i data-icon="file-chart"></i><span>Reports</span></a>
+    <div class="nav-label">Records</div>
+    <a class="nav-item" href="#/builds" data-view="builds"><i data-icon="package"></i><span>Builds</span></a>
+    <a class="nav-item" href="#/sessions" data-view="sessions"><i data-icon="activity"></i><span>Sessions</span></a>
+  </nav>
+  <!-- Same pages as before, opened from Reports and Devices rather than the sidebar. -->
+  <nav id="nav-legacy" hidden>
+    <a href="#/units">Units</a>
+    <a href="#/fleet">Device details</a>
+    <a href="#/builds">APK / Builds</a>
+    <a href="#/sessions">Sessions</a>
+  </nav>
+  <div class="nav-bottom">
+    <button id="profile-btn" class="nav-item" type="button" aria-haspopup="menu">
+      <i data-icon="user"></i>
+      <span class="who">Profile<small>Master admin</small></span>
+    </button>
+    <button id="settings-btn" class="nav-item" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu">
+      <i data-icon="settings"></i><span>Settings</span>
+    </button>
+    <div id="settings-menu" class="menu settings-menu" role="menu">
+      <div class="menu-label">Appearance</div>
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="light">Light</button>
+        <button type="button" data-theme-choice="dark">Dark</button>
+        <button type="button" data-theme-choice="system">System</button>
+      </div>
+      <div class="menu-sep"></div>
+      <div class="menu-label">Data</div>
+      <button id="pause" class="menu-item" type="button" role="menuitem"><i data-icon="pause" id="pause-icon"></i><span id="pause-label">Pause auto-refresh</span></button>
+    </div>
+  </div>
+</aside>
+<div id="scrim" class="scrim"></div>
+
+<header class="topbar">
+  <button id="menu-toggle" class="icon-btn menu-toggle" type="button" aria-label="Open navigation"><i data-icon="menu"></i></button>
+  <div class="org">
+    <span class="org-name">Shahi Exports Pvt Ltd</span>
+    <span class="role" title="Master token: every unit, read-only">Master · Read-only</span>
+  </div>
+  <div class="topbar-right">
+    <div id="status" class="status" hidden>
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text" class="status-text">Loading…</span>
+    </div>
+    <button id="theme-toggle" class="icon-btn" type="button" aria-label="Switch theme"><i data-icon="moon"></i></button>
+    <button id="user-btn" class="user-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
+      <span class="avatar" aria-hidden="true">MA</span>
+      <span class="user-name">Master admin</span>
+      <i data-icon="chevron-down"></i>
+    </button>
+    <div id="user-menu" class="menu user-menu" role="menu">
+      <div class="menu-head">
+        <strong>Master admin</strong>
+        <span>All units · read-only</span>
+        <span id="token-scope">Token kept for this browser tab</span>
+      </div>
+      <button id="signout" class="menu-item danger" type="button" role="menuitem"><i data-icon="log-out"></i><span>Sign out</span></button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="login" class="login" hidden>
+    <div class="login-logo-plate"><img class="login-logo" src="shahi_logo.png" alt="SHAHI"></div>
+    <h1>Label IQ</h1>
+    <p class="login-sub">Master Dashboard · Shahi Exports Pvt Ltd</p>
+    <p>Paste the <strong>master token</strong> from <code>telemetry_server\tokens.json</code>
+      (<code>masterTokens</code>). Unit tokens are not accepted here. The dashboard is read-only.</p>
+    <form id="login-form" autocomplete="off">
+      <label for="token">Master token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+      <label class="check"><input id="remember" type="checkbox"> Remember on this PC</label>
+      <button class="primary" type="submit">Open dashboard</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="app" class="page" hidden>
+    <div id="page-top"></div>
+    <form id="filters" class="filters" autocomplete="off" hidden></form>
+    <div id="content"></div>
+  </section>
+</main>
+</body>
+</html>
