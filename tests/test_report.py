@@ -228,6 +228,113 @@ class TextTests(Base):
         self.assertEqual(m.count("Allocated ="), 0)
 
 
+def tsd(day, hour, minute=5):
+    y, m, d = (int(x) for x in day.split("-"))
+    return int(datetime.datetime(y, m, d, hour, minute, tzinfo=IST).timestamp() * 1000)
+
+
+def scan_on(day, unit, label, key, hour, result="MATCH", variant=None):
+    r = scan(unit, label, key, hour, result, variant)
+    r["tsDevice"] = tsd(day, hour)
+    return r
+
+
+WEEK_FLEET = {"day": DAY, "items": [
+    item("u21", "U21-aaa", "A"), item("u21", "U21-bbb", "B", last_seen=NOW_MS - 11 * DAYS),
+    item("u21", "U21-ccc", "C", last_seen=NOW_MS - 29 * DAYS),
+    item("u10", "U10-xxx", "X"), item("u10", "U10-demo", "Z", variant="uniqloU10Demo"), item("u10", "PC-DIAG", "P"),
+]}
+WEEK_SCANS = [
+    scan_on("2026-11-09", "u21", "U21-aaa", "A", 10), scan_on("2026-11-09", "u21", "U21-aaa", "A", 10),
+    scan_on("2026-11-09", "u21", "U21-aaa", "A", 11, "MISMATCH"),
+    scan_on("2026-11-11", "u21", "U21-aaa", "A", 10), scan_on("2026-11-11", "u21", "U21-aaa", "A", 14),
+    scan_on("2026-11-11", "u21", "U21-aaa", "A", 14),
+    scan_on("2026-11-08", "u21", "U21-aaa", "A", 10),                    # Sunday before: not this week
+    scan_on("2026-11-10", "u10", "U10-xxx", "X", 9), scan_on("2026-11-10", "u10", "U10-demo", "Z", 9,
+                                                            variant="uniqloU10Demo"),
+]
+WEEK_DAYS = ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]
+
+
+class WeekTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.up.shutdown(); self.up.server_close()
+        self.up = serve(make_upstream(WEEK_FLEET, WEEK_SCANS))
+        self.cfg.upstream_port = self.up.port
+
+    def test_week_days_run_from_monday_to_today(self):
+        self.assertEqual(report.week_days(datetime.date(2026, 11, 13)), WEEK_DAYS)
+        self.assertEqual(report.week_days(datetime.date(2026, 11, 9)), ["2026-11-09"])
+        self.assertEqual(len(report.week_days(datetime.date(2026, 11, 15))), 7)          # Sunday: the whole week
+
+    def test_week_numbers(self):
+        w = report.build_week(WEEK_FLEET, WEEK_SCANS, WEEK_DAYS)
+        u21 = w["u21"]
+        self.assertEqual(u21["total"], 5)                       # 2 + 3 matches; the mismatch and last Sunday are out
+        self.assertEqual((u21["used"], u21["registered"]), (1, 3))
+        self.assertEqual(dict(u21["days"]), {"2026-11-09": 2, "2026-11-11": 3})
+        self.assertEqual(dict(u21["hours"]), {10: 3, 14: 2})
+        t = u21["tablets"][0]
+        self.assertEqual((t["label"], t["total"]), ("U21-aaa", 5))
+        self.assertEqual(w["u10"]["total"], 1)                  # demo build and PC install left out
+        self.assertEqual(w["u10"]["registered"], 1)
+
+    def test_week_count_all(self):
+        w = report.build_week(WEEK_FLEET, WEEK_SCANS, WEEK_DAYS, count="all")
+        self.assertEqual(w["u21"]["total"], 6)
+
+    def test_week_text(self):
+        t = report.week_text(report.build_week(WEEK_FLEET, WEEK_SCANS, WEEK_DAYS)["u21"], "16:20")
+        for part in ("*Label IQ · Weekly summary*", "Mon 9 – Fri 13 Nov 2026 · till 16:20", "*Unit 21*",
+                     "Total scans this week: *5*", "Tablets used: *1* (3 registered for this unit)",
+                     "*By day*\nMon 9: 2 · Tue 10: 0 · Wed 11: 3 · Thu 12: 0 · Fri 13: 0",
+                     "*1. U21-aaa* · 5 scans · active 2 of 5 days",
+                     "*By hour (all days together)*\n10–11: 3 · 11–12: 0 · 12–13: 0 · 13–14: 0 · 14–15: 2"):
+            self.assertIn(part, t)
+
+    def test_week_title_across_months(self):
+        self.assertEqual(report.week_title(["2026-10-29", "2026-11-02"]), "Thu 29 Oct – Mon 2 Nov 2026")
+
+    def test_a_unit_without_scans_says_so(self):
+        w = report.build_week(WEEK_FLEET, [], WEEK_DAYS)
+        self.assertIn("Total scans this week: *0*", report.week_text(w["u21"], "16:20"))
+        self.assertIn("No tablet scanned this week.", report.week_text(w["u21"], "16:20"))
+
+    def test_run_week_asks_for_the_whole_week_and_print_sends_nothing(self):
+        out = io.StringIO()
+        code = report.run_week(self.cfg, {"mode": "live", "demo_to": [], "people": [], "names": {}}, self.wa, WA_KEY,
+                               print_only=True, now=NOW, out=out)
+        self.assertEqual(code, 0)
+        q = [q for p, _, q in self.up.log if p == "/v1/scans"][0]
+        self.assertEqual((q["from"], q["to"]), (["2026-11-09"], ["2026-11-13"]))
+        self.assertEqual(self.gw.log, [])
+        self.assertIn("*Unit 10*", out.getvalue())
+        self.assertIn("*Unit 21*", out.getvalue())
+
+    def test_demo_week_sends_one_message_per_unit_to_the_demo_number_only(self):
+        code = report.run_week(self.cfg, {"mode": "demo", "demo_to": ["919999999999@c.us"], "names": {},
+                               "people": [{"name": "A", "role": "", "to": "919000000001@c.us", "units": ["u21"],
+                                           "all": False, "live": True}]}, self.wa, WA_KEY, now=NOW)
+        self.assertEqual(code, 0)
+        self.assertEqual({b["chatId"] for _, _, b in self.gw.log}, {"919999999999@c.us"})
+        titles = [b["text"].split("\n")[3] for _, _, b in self.gw.log]
+        self.assertEqual(titles, ["*Unit 10*", "*Unit 21*"])
+
+    def test_off_sends_nothing_and_live_sends_each_person_their_units(self):
+        settings = {"mode": "off", "demo_to": [], "names": {}, "people": [
+            {"name": "A", "role": "", "to": "919000000001@c.us", "units": ["u21"], "all": False, "live": True},
+            {"name": "B", "role": "", "to": "919000000002@c.us", "units": [], "all": True, "live": True},
+            {"name": "C", "role": "", "to": "919000000003@c.us", "units": ["u10"], "all": False, "live": False}]}
+        self.assertEqual(report.run_week(self.cfg, settings, self.wa, WA_KEY, now=NOW), 0)
+        self.assertEqual(self.gw.log, [])
+        settings["mode"] = "live"
+        self.assertEqual(report.run_week(self.cfg, settings, self.wa, WA_KEY, now=NOW), 0)
+        got = [(b["chatId"], b["text"].split("\n")[3]) for _, _, b in self.gw.log]
+        self.assertEqual(sorted(got), [("919000000001@c.us", "*Unit 21*"), ("919000000002@c.us", "*Unit 10*"),
+                                       ("919000000002@c.us", "*Unit 21*")])
+
+
 class SettingsTests(unittest.TestCase):
     def write(self, data):
         f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")

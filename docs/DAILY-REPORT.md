@@ -66,3 +66,15 @@ Keys: `report.json` and `WHATSAPP_API_KEY` (a copy of the gateway key, as the tr
 5. Look at the first live run's log; failed recipients are listed (numbers are masked in logs).
 
 `python report.py --print` prints every unit's text and sends nothing (it needs the same environment as the job).
+
+## Weekly summary (`python report.py --week`)
+
+One message per unit for the week so far (Monday to today), same modes and recipients as the daily report
+(`demo` goes only to `demo_to`; `live` sends each person the units they have, one message per unit). Contents:
+
+- total scans this week (MATCH scans) and **tablets used** with the number **registered** for the unit
+  (physical tablets on record; no guessed "allocated" figure),
+- scans **by day**, scans per **tablet** (total, active days, per day), and scans **by hour** (all days together).
+
+Add `--print` to only show the messages. It was checked on 13 Nov 2026 against the official dashboard's own totals for the
+same dates (identical for all four units).

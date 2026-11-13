@@ -4,6 +4,8 @@ For every unit: how many tablets were used out of the tablets allocated, the sca
 today, and in which hours each tablet scanned. Sent through the same WhatsApp gateway as the Garment Tracker alerts.
 
   python report.py --print      show every unit's text and what each person would get; sends nothing
+  python report.py --week       weekly summary (Monday to today), one message per unit; same modes as below;
+                                  add --print to only show it
   python report.py              the scheduled run (Kubernetes CronJob): mode comes from report.json
                                   off  = does nothing (default), demo = sends only to the demo numbers,
                                   live = sends to the people with "live": true
@@ -265,13 +267,15 @@ def send_text(base_url: str, api_key: str, session: str, to: str, text: str, tri
 
 
 # ---- data ----------------------------------------------------------------------------------------------------------
-def fetch(up: Upstream) -> tuple[dict, list[dict]]:
+def fetch(up: Upstream, start: Optional[str] = None, end: Optional[str] = None) -> tuple[dict, list[dict]]:
+    """The fleet and the scans from start to end (YYYY-MM-DD, whole days; default: the server's day)."""
     fleet = up.get_json(f"/v1/dashboard/fleet?limit={PAGE}")
-    day = fleet["day"]
+    start = start or fleet["day"]
+    end = end or start
     scans: list[dict] = []
     offset = 0
     while True:
-        page = up.get_json(f"/v1/scans?from={day}&to={day}&limit={PAGE}&offset={offset}")
+        page = up.get_json(f"/v1/scans?from={start}&to={end}&limit={PAGE}&offset={offset}")
         scans += page.get("items", [])
         if not page.get("hasMore"):
             break
@@ -279,6 +283,153 @@ def fetch(up: Upstream) -> tuple[dict, list[dict]]:
         if offset > 50 * PAGE:       # safety stop
             raise UpstreamError("too many scans for one report")
     return fleet, scans
+
+
+# ---- weekly summary ------------------------------------------------------------------------------------------------
+def week_days(today: datetime.date) -> list[str]:
+    """Monday of this week up to today, as YYYY-MM-DD."""
+    monday = today - datetime.timedelta(days=today.weekday())
+    return [(monday + datetime.timedelta(days=i)).isoformat() for i in range((today - monday).days + 1)]
+
+
+def day_label(day: str) -> str:
+    d = datetime.date.fromisoformat(day)
+    return f"{DAYS[d.weekday()]} {d.day}"
+
+
+def build_week(fleet: dict, scans: list[dict], days: list[str], exclude_prefixes: tuple[str, ...] = ("PC-",),
+               names: Optional[dict] = None, count: str = "match") -> dict[str, dict]:
+    """Per unit: scans per day, per tablet (total + per day), per hour over the week, tablets used and registered.
+    Numbers are MATCH scans (count="match") or every scan event (count="all"). Pure function (tested)."""
+    names = {str(k).strip(): str(v).strip() for k, v in (names or {}).items() if str(v).strip()}
+    wanted = set(days)
+    units: dict[str, dict] = {}
+
+    def unit(uid: str) -> dict:
+        return units.setdefault(uid, {"tablets": {}, "registered": set(), "days": collections.Counter(),
+                                      "hours": collections.Counter(), "events": 0})
+
+    def tablet(uid: str, key: str) -> dict:
+        t = unit(uid)["tablets"].get(key)
+        if t is None:
+            t = {"key": key, "label": "", "label_ts": -1, "events": 0, "days": collections.Counter()}
+            unit(uid)["tablets"][key] = t
+        return t
+
+    for it in fleet.get("items", []):
+        uid = str(it.get("unitId") or "").lower()
+        if not uid or not keep(it.get("variant"), it.get("deviceLabel"), exclude_prefixes):
+            continue
+        key = it.get("tabletKey") or tablet_key(it)
+        t = tablet(uid, key)
+        ls = int(it.get("lastSeen") or 0)
+        if ls > t["label_ts"] and it.get("deviceLabel"):
+            t["label"], t["label_ts"] = str(it["deviceLabel"]), ls
+        unit(uid)["registered"].add(key)
+
+    for r in scans:
+        uid = str(r.get("unitId") or "").lower()
+        dev = r.get("device") or {}
+        ts = r.get("tsDevice")
+        if not uid or not isinstance(ts, (int, float)) or not keep(r.get("variant"), dev.get("label"), exclude_prefixes):
+            continue
+        when = datetime.datetime.fromtimestamp(ts / 1000, IST)
+        day = when.date().isoformat()
+        if day not in wanted:
+            continue
+        t = tablet(uid, tablet_key(dev))
+        if not t["label"] and dev.get("label"):
+            t["label"] = str(dev["label"])
+        t["events"] += 1
+        unit(uid)["events"] += 1
+        if count == "all" or str((r.get("scan") or {}).get("result") or "").upper() == "MATCH":
+            t["days"][day] += 1
+            unit(uid)["days"][day] += 1
+            unit(uid)["hours"][when.hour] += 1
+
+    out: dict[str, dict] = {}
+    for uid, u in units.items():
+        for t in u["tablets"].values():
+            t["total"] = sum(t["days"].values())
+        tabs = sorted(u["tablets"].values(), key=lambda t: (-t["total"], t["label"] or t["key"]))
+        for t in tabs:
+            t["label"] = names.get(t["label"]) or names.get(t["key"]) or t["label"] or "tablet"
+        used = [t for t in tabs if t["events"] > 0]
+        out[uid] = {"unit": uid, "title": unit_title(uid), "days_list": days, "tablets": used,
+                    "used": len(used), "registered": max(len(u["registered"]), len(used)),
+                    "total": sum(u["days"].values()), "days": u["days"], "hours": u["hours"]}
+    return out
+
+
+def week_title(days: list[str]) -> str:
+    a, b = datetime.date.fromisoformat(days[0]), datetime.date.fromisoformat(days[-1])
+    if a == b:
+        return f"{DAYS[a.weekday()]} {a.day} {MONTHS[a.month - 1]} {a.year}"
+    first = f"{DAYS[a.weekday()]} {a.day}" + (f" {MONTHS[a.month - 1]}" if a.month != b.month else "")
+    return f"{first} – {DAYS[b.weekday()]} {b.day} {MONTHS[b.month - 1]} {b.year}"
+
+
+def week_text(u: dict, till: str) -> str:
+    days = u["days_list"]
+    lines = ["*Label IQ · Weekly summary*", f"{week_title(days)} · till {till}", "", f"*{u['title']}*",
+             f"Total scans this week: *{u['total']}*",
+             f"Tablets used: *{u['used']}* ({u['registered']} registered for this unit)", "",
+             "*By day*", " · ".join(f"{day_label(d)}: {u['days'].get(d, 0)}" for d in days)]
+    for i, t in enumerate(u["tablets"], 1):
+        active = sum(1 for d in days if t["days"].get(d, 0) > 0)
+        lines += ["", f"*{i}. {t['label']}* · {t['total']} scan{'s' if t['total'] != 1 else ''}"
+                      f" · active {active} of {len(days)} days",
+                  " · ".join(f"{day_label(d)}: {t['days'].get(d, 0)}" for d in days)]
+    hs = sorted(u["hours"])
+    if hs:
+        lines += ["", "*By hour (all days together)*",
+                  " · ".join(f"{hour_range(h)}: {u['hours'].get(h, 0)}" for h in range(hs[0], hs[-1] + 1))]
+    elif not u["tablets"]:
+        lines += ["", "No tablet scanned this week."]
+    return "\n".join(lines)
+
+
+def run_week(cfg: Config, settings: dict, wa_url: str, wa_key: str, wa_session: str = "default",
+             print_only: bool = False, now: Optional[datetime.datetime] = None,
+             exclude_prefixes: tuple[str, ...] = ("PC-",), count: str = "match", out=sys.stdout) -> int:
+    """Weekly summary, one message per unit. In demo mode it goes only to the demo numbers; live mode sends each
+    person the units they have (one message per unit). Never sent unless the mode says so."""
+    now = now or datetime.datetime.now(IST)
+    days = week_days(now.date())
+    fleet, scans = fetch(Upstream(cfg), days[0], days[-1])
+    units = build_week(fleet, scans, days, exclude_prefixes, settings.get("names"), count)
+    till = now.strftime("%H:%M")
+    log.info("weekly summary %s .. %s: %d units, %d scans fetched", days[0], days[-1], len(units), len(scans))
+    order = sorted(units, key=unit_sort)
+    if print_only:
+        for uid in order:
+            print(week_text(units[uid], till), file=out)
+            print("\n" + "=" * 40 + "\n", file=out)
+        return 0
+    mode = settings["mode"]
+    if mode == "off":
+        log.info("mode is off: nothing sent")
+        return 0
+    failures = 0
+    if mode == "demo":
+        if not settings["demo_to"]:
+            log.error("demo mode but no demo number in report.json")
+            return 1
+        for uid in order:
+            for to in settings["demo_to"]:
+                ok, detail = send_text(wa_url, wa_key, wa_session, to, week_text(units[uid], till))
+                log.info("weekly %s -> %s: %s", units[uid]["title"], masked(to), detail)
+                failures += 0 if ok else 1
+        return 1 if failures else 0
+    for p in settings["people"]:
+        if not p["live"]:
+            continue
+        for uid in order:
+            if p["all"] or uid in p["units"]:
+                ok, detail = send_text(wa_url, wa_key, wa_session, p["to"], week_text(units[uid], till))
+                log.info("weekly %s -> %s (%s): %s", units[uid]["title"], p["name"] or "?", masked(p["to"]), detail)
+                failures += 0 if ok else 1
+    return 1 if failures else 0
 
 
 # ---- run -----------------------------------------------------------------------------------------------------------
@@ -340,6 +491,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         cfg = Config.from_env()
         settings = load_settings(env.get("LABELIQ_REPORT_FILE", "/etc/labeliq-report/report.json"))
+        if "--week" in args:
+            return run_week(cfg, settings, env.get("WHATSAPP_URL", ""), env.get("WHATSAPP_API_KEY", ""),
+                            env.get("WHATSAPP_SESSION", "default"), print_only="--print" in args,
+                            count=("all" if env.get("LABELIQ_REPORT_COUNT", "match") == "all" else "match"),
+                            exclude_prefixes=tuple(x for x in env.get("LABELIQ_EXCLUDE_LABELS", "PC-").split(",") if x))
         return run(cfg, settings, env.get("WHATSAPP_URL", ""), env.get("WHATSAPP_API_KEY", ""),
                    env.get("WHATSAPP_SESSION", "default"), print_only="--print" in args,
                    show_quality=env.get("LABELIQ_REPORT_QUALITY", "off") == "on",
